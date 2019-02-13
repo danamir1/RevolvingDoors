@@ -50,8 +50,9 @@ def goverment_hierarchy():
 # private = ['חברה פרטית','חברה פרטית מחוייבת במאזן','חברת חו"ל']
 # private = []
 def create_entities_database():
-    if not os.path.isdir('enttities_database'):
-        os.mkdir('enttities_database')
+    output_dir = 'entities_database'
+    if not os.path.isdir(output_dir):
+        os.mkdir(output_dir)
     # datasets = [pd.read_csv(csv_file) for csv_file in companies]
     ids = set()
     counter = 0
@@ -120,10 +121,10 @@ def create_entities_database():
             if counter % 10000 ==0:
                 print('done', counter)
                 # break
-        database.to_excel('enttities_database/enttities_database_' + str(counter) + '.xlsx')
-        database.to_csv('enttities_database/enttities_database_' + str(counter) + '.csv')
-    database.to_excel('enttities_database/enttities_database.xlsx')
-    database.to_csv('enttities_database/enttities_database.csv')
+        database.to_excel(output_dir+'/enttities_database_' + str(counter) + '.xlsx')
+        database.to_csv(output_dir+'/enttities_database_' + str(counter) + '.csv')
+    database.to_excel(output_dir+'/enttities_database.xlsx')
+    database.to_csv(output_dir+'/enttities_database.csv')
     print('total of', counter, 'entities')
 
 def csv2xlsx(file_name):
