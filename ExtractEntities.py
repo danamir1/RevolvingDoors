@@ -9,29 +9,40 @@ import pandas as pd
 # pd = None
 import csv
 import wikipedia
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.keys import Keys
+except:
+    webdriver = None
+    Keys = None
 import time
 import re
 from fuzzywuzzy import fuzz
+
 ORG_TAG = 'I-ORG'
+
 
 def save_pickle(obj, path):
     with open(path, "wb") as f:
         pickle.dump(obj, f)
 
+
 def load_pickle(path):
     with open(path, "rb") as f:
         return pickle.load(f)
 
+
 def string_from_entity(entity):
     return ' '.join(entity._collection)
+
 
 def articles_generator(path):
     with open(path, "r",
               encoding="utf8") as f:
         text = f.read()
     return (t.split(URL_SPLIT) for t in text.split(ARTICLE_SPLIT)[:-1])
+
 
 def save_to_csv(path):
     with open(path.replace(".txt", ".csv"), "w", encoding="utf8") as f:
@@ -55,6 +66,7 @@ def analyze_discovery_percentage():
     df.to_csv("discovery_ratio_0209.csv", encoding="utf8")
     print("here")
 
+
 def filter_valid_terms(min_count=10, min_discovery_ratio=0.1, in_path="discovery_ratio_0209.csv",
                        out_path="filtered_organizations_0209.csv"):
     data = pd.read_csv(in_path, encoding='utf8')
@@ -77,7 +89,8 @@ def collect_wiki_categories_for_entities(entities_to_search):
             categories_counter[category] += 1
     counts = pd.DataFrame({'category': list(categories_counter.keys()), 'count':
         list(categories_counter.values())})
-    counts.to_csv('categories_counts.csv',encoding='utf8')
+    counts.to_csv('categories_counts.csv', encoding='utf8')
+
 
 def find_names_from_maya(entities_to_search):
     names_data = {'name': [], 'official_name': []}
@@ -105,8 +118,7 @@ def find_names_from_maya(entities_to_search):
             continue
     data = pd.DataFrame(names_data)
     data.to_csv('maya_name_matches.csv', encoding='utf8')
-        # elem.send_keys(Keys.RETURN)
-
+    # elem.send_keys(Keys.RETURN)
 
 
 # nlp = spacy.load('en')
@@ -133,9 +145,11 @@ def manually_filter_terms(filtered_terms):
 def find_merge_candidates_by_fuzzy_matching(terms):
     def _score(term1, term2):
         return fuzz.token_sort_ratio(term1, term2)
+
     def _get_kth_elem(list_of_tuples, i):
         return [x[i] for x in list_of_tuples]
-    matches = [(t1, t2, _score(t1,t2)) for t1, t2 in combinations(terms, 2)]
+
+    matches = [(t1, t2, _score(t1, t2)) for t1, t2 in combinations(terms, 2)]
     df = pd.DataFrame({'term_1': _get_kth_elem(matches, 0),
                        'term_2': _get_kth_elem(matches, 1),
                        'score': _get_kth_elem(matches, 2)})
@@ -168,7 +182,8 @@ def find_merge_candidates_by_wikipedia_search(terms, categories):
     df = pd.DataFrame(merge_candidates)
     df.to_csv("wikipedia_merge_candidates.csv", encoding='utf8')
 
-def merge_entities_sets(merge_pairs, org_counts, org_pairs_counts):
+
+def merge_entities_sets(merge_pairs):
     orgs2merge_sets = {}
     for org1, org2 in merge_pairs:
         if (org1 in orgs2merge_sets) and (org2 in orgs2merge_sets):
@@ -186,7 +201,10 @@ def merge_entities_sets(merge_pairs, org_counts, org_pairs_counts):
             new_set = {org1, org2}
             orgs2merge_sets[org1] = new_set
             orgs2merge_sets[org2] = new_set
+    return orgs2merge_sets
 
+
+def map_set_to_term(orgs2merge_sets, org_counts):
     unique_merge_sets = []
     for m_set in orgs2merge_sets.values():
         if m_set not in unique_merge_sets:
@@ -197,8 +215,12 @@ def merge_entities_sets(merge_pairs, org_counts, org_pairs_counts):
             orgs2merge_sets[org] = merge_set
     set2term = {}
     for set in unique_merge_sets:
-        set2term[set] = max(set, key= lambda org: org_counts[org])
+        set2term[set] = max(set, key=lambda org: org_counts[org])
         print("for set: {} chose representative: {}".format(set, set2term[set]))
+    return set2term
+
+
+def update_counts_by_merge_set(orgs2merge_sets, set2term, org_counts, org_pairs_counts):
     new_org_counts = Counter()
     new_pairs_counts = Counter()
     for org, count in org_counts.items():
@@ -225,7 +247,7 @@ def merge_entities_sets(merge_pairs, org_counts, org_pairs_counts):
 
 def filter_counters_by_org_list(org_counts, org_pairs_counts, filtered_list):
     filtered_set = set(filtered_list)
-    org_counts = {k:v for k,v in org_counts.items() if k in filtered_set}
+    org_counts = {k: v for k, v in org_counts.items() if k in filtered_set}
     org_pairs_counts = {k: v for k, v in org_pairs_counts.items() if all([(x in filtered_set) for x in k])}
     return org_counts, org_pairs_counts
 
@@ -235,6 +257,7 @@ def load_merge_pairs():
         pairs = pd.read_csv(path, encoding='utf8')
         pairs = list(zip(pairs['term1'].values, pairs['term2'].values))
         return pairs
+
     wiki_pairs = extract_pairs("wikipedia_merge_candidates_filtered.csv")
     fuzzy_matching_pairs = extract_pairs("organizations_fuzzy_matching_after_elimination.csv")
     fuzzy_partial_pairs = extract_pairs("organizations_fuzzy_partial_matching_after_elimination.csv")
@@ -246,14 +269,14 @@ if __name__ == "__main__":
     # save_to_csv("articles_text_heb_20162019.txt")
     # analyze_discovery_percentage()
     # filter_valid_terms()
-    filtered_terms = list(pd.read_csv('filtered_organizations_0209_manual_elimination.csv',encoding='utf8')['term'].values)
+    filtered_terms = list(
+        pd.read_csv('filtered_organizations_0209_manual_elimination.csv', encoding='utf8')['term'].values)
     # categories = list(pd.read_csv('categories_counts_filtered.csv', encoding='utf8')['category'].values)
     # find_merge_candidates_by_wikipedia_search(filtered_terms, categories)
     org_counter = load_pickle('orgainizations_counts_0209.pkl')
     pairs_counter = load_pickle('orgainizations_pairs_counts_0209.pkl')
     org_counter, pairs_counter = filter_counters_by_org_list(org_counter, pairs_counter, filtered_terms)
     merge_pairs = load_merge_pairs()
-
 
     merge_entities_sets(merge_pairs=merge_pairs, org_counts=org_counter, org_pairs_counts=pairs_counter)
 
