@@ -10,21 +10,23 @@ from collections import defaultdict
 import numpy as np
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
-from RevolvingDoors.ExtractEntities import map_set_to_term, merge_entities_sets, save_pickle
+from RevolvingDoors.ExtractEntities import map_set_to_term, merge_entities_sets, save_pickle, load_pickle
 
 # GLOBALS
 meetings_info = pd.DataFrame()
 first_names = set()
 last_names = set()
 companies_info = pd.DataFrame()
-LOCAL_PATH_TO_DATA = "C:\\Users\\Ella\\PycharmProjects\\needle_final_project\\data\\"
+LOCAL_PATH_TO_DATA = "C:\\Users\\Ella\\PycharmProjects\\needle_final_project\\RevolvingDoors\\data\\"
 WORDS_TO_CLEAN = set()
 count_companies_per_name = set()
+lobbyists_mentions = []
+titles = set()
 
 
-def _load_globals(path2meetings_info, path2first_names, path2last_names, path2companies_info, path2titles,
-                  path2companies_oracle, path2cleaning_list):
-    global meetings_info, first_names, last_names, companies_info, titles, companies_oracle, WORDS_TO_CLEAN
+def _load_globals(path2meetings_info, path2first_names, path2last_names, path2cleaning_list,
+                  path2lobbyists_mentions, path2titles):
+    global meetings_info, first_names, last_names, companies_info, WORDS_TO_CLEAN, lobbyists_mentions, titles
     meetings_info = pd.read_csv(path2meetings_info)
     with open(path2first_names, 'r', encoding='utf-8') as fns:
         first_names = set(fns.read().split('\n'))
@@ -32,13 +34,14 @@ def _load_globals(path2meetings_info, path2first_names, path2last_names, path2co
         last_names = set(lns.read().split('\n'))
     with open(path2cleaning_list, 'r', encoding='utf-8') as lns:
         WORDS_TO_CLEAN = set(lns.read().split('\n'))
+    with open(path2lobbyists_mentions, 'r', encoding='utf-8') as lns:
+        lobbyists_mentions = lns.read().split('\n')
 
 
 def extract_guests_from_meetings(protocols_path, meetings_info_file):
     rows = {str(y): [] for y in range(2004, 2019)}
     cols = ['full_name', 'job_title', 'company', 'raw_company', 'meeting_id', 'meeting_title', 'meeting_date',
             'reference_link']
-    all_rows = []
     for meeting_id, meeting_file_path in tqdm(_get_files_path(protocols_path)):
         committee_id, meeting_date, meeting_title, session_content, reference, year = _get_meeting_info(meetings_info,
                                                                                                         meeting_id)
@@ -53,13 +56,15 @@ def extract_guests_from_meetings(protocols_path, meetings_info_file):
                 full_name, job_title, cleaned_work_place, work_place, meeting_id, meeting_title, meeting_date,
                 reference)
             rows[year].append(guest_tuple)
-            all_rows.append(guest_tuple)
 
+    all_dfs = []
     for year in rows:
         df = pd.DataFrame(rows[year], columns=cols)
+        all_dfs.append(df)
         save_guests_path = 'data\\guests\\{}'.format(date.today().__str__())
         os.makedirs(save_guests_path, exist_ok=True)
         df.to_csv(save_guests_path + '\\{}.csv'.format(year), sep=",", line_terminator='\n', encoding='utf-8')
+    _concatenate_guests(all_dfs)
 
 
 # INNER TOOLZ
@@ -109,28 +114,29 @@ def _get_meeting_guests(meeting_file_path):
     return guests
 
 
-def _concatenate_guests():
-    all_dfs = []
-    for year in range(2004, 2019):
-        # last_update = date.today().__str__()
-        last_update = '2019-02-18'
-        save_guests_path = 'data\\guests\\{}'.format(last_update)
-        df = pd.read_csv(save_guests_path + '\\{}.csv'.format(year))
-        all_dfs.append(df)
+def _concatenate_guests(all_dfs=[]):
+    if not all_dfs:
+        for year in range(2004, 2019):
+            last_update = date.today().__str__()
+            # last_update = '2019-02-18'
+            save_guests_path = 'data\\guests\\{}'.format(last_update)
+            df = pd.read_csv(save_guests_path + '\\{}.csv'.format(year))
+            all_dfs.append(df)
     all_rows = pd.concat(all_dfs)
     df = all_rows[all_rows.full_name.str.contains("\w\s\w", regex=True)]
     df.to_csv("guests_0.csv", sep=",", line_terminator='\n', encoding='utf-8')
     return df
 
 
-def _collect_companies_pairs_and_scores(iteration_number):
+def _collect_companies_pairs_and_scores(iteration_number=0):
     df = pd.read_csv("guests_{}.csv".format(iteration_number))
     d = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": [], "iou": [], "intersection": [],
          "union": []}
 
     if iteration_number != 0:
         df = update_indicative_names(df)
-        gb = df[df.is_indicative_name].groupby("company")
+        df = df[df.is_indicative_name]
+        gb = df.groupby("company")
     else:
         gb = df.groupby("company")
 
@@ -151,19 +157,20 @@ def _collect_companies_pairs_and_scores(iteration_number):
                              encoding='utf-8')
 
 
-def _merge_companies_names(condition, condition_name, iteration_number):
+def _merge_companies_names(condition, condition_name, iteration_number=1):
     candidates_scores = pd.read_csv("candidates_scores_{}.csv".format(iteration_number - 1))
     all_guests = pd.read_csv("guests_{}.csv".format(iteration_number - 1))
     c1 = candidates_scores[condition(candidates_scores)]["c1"].tolist()
     c2 = candidates_scores[condition(candidates_scores)]["c2"].tolist()
     pairs = list(zip(c1, c2))
+    save_pickle(pairs, "pairs_{}_{}.pkl".format(iteration_number, condition_name))
     orgs2merge_sets = merge_entities_sets(pairs)
     companies_count = all_guests.company.value_counts()
     set2term = map_set_to_term(orgs2merge_sets, companies_count)
     save_pickle(orgs2merge_sets, "guests_orgs2merge_sets_{}_{}.pkl".format(iteration_number, condition_name))
     save_pickle(set2term, "guests_set2term_{}_{}.pkl".format(iteration_number, condition_name))
-    for org, merge_set in orgs2merge_sets.items():
-        all_guests[all_guests.company == org].company = set2term[merge_set]
+    for org, merge_set in tqdm(orgs2merge_sets.items()):
+        all_guests.loc[all_guests.company == org, "company"] = set2term[merge_set]
     all_guests.to_csv("guests_{}.csv".format(iteration_number), sep=",", line_terminator='\n', encoding='utf-8')
     return all_guests
 
@@ -184,9 +191,14 @@ def _get_candidates_for_similarity(df):
 
 
 def update_indicative_names(df: pd.DataFrame, threshold=5):
-    count_companies_per_name = df.groupby("full_name").company.nunique().reset_index(name='count_companies_per_name')
+    filtered_keys = [k for k in df.keys() if k not in ['count_companies_per_name', 'is_indicative_name']]
+    df = df[filtered_keys]
+    count_companies_per_name = df.groupby("full_name", as_index=False).company.nunique().reset_index(
+        name='count_companies_per_name')
     joined_df = df.join(count_companies_per_name)
-    joined_df["is_indicative_name"] = joined_df[joined_df.count_companies_per_name >= threshold]
+
+    joined_df.loc[:, "is_indicative_name"] = (joined_df.count_companies_per_name <= threshold) & \
+                                             (joined_df.job_title.str.contains("|".join(lobbyists_mentions)))
     return joined_df
 
 
@@ -204,11 +216,27 @@ def _get_jaccard_score(gb, pair):
     score = intersection_size / union_size
     return score, intersection_size, union_size
 
+
 def _clean_work_place(raw_work_place):
     for word in WORDS_TO_CLEAN:
         if raw_work_place.startswith(word):
-            return _clean_work_place(raw_work_place[len(word):])
+            first_space = re.search("\\s", raw_work_place[len(word):])
+            if not first_space:
+                return ""
+            idx = len(word) + first_space.end()
+            return _clean_work_place(raw_work_place[idx:].strip())
     return raw_work_place
+
+
+def _get_lobbyists_mentions(work_place):
+    for exp in lobbyists_mentions:
+        if work_place.startswith(exp):
+            first_space = re.search("\\s", work_place[len(exp):])
+            if not first_space:
+                return work_place, ""
+            idx = len(exp) + first_space.start()
+            return work_place[:idx].strip(), work_place[idx:].strip()
+        return "", work_place
 
 
 def _parse_rows(guests_rows):
@@ -225,11 +253,18 @@ def _parse_rows(guests_rows):
         if not valid or len(row_parts) == 1:
             continue
         # TODO verify if workplace in companies file
-        work_place = row_parts[-1].strip()
-        cleaned_work_place = _clean_work_place(work_place)
-        # work_place = _guess_company_name(row_parts[-1].strip())
         if len(row_parts) > 2:
-            job_title = row_parts[1].strip().strip("–").strip()
+            job_title = " ".join((job_title, row_parts[1].strip().strip("–").strip()))
+
+        work_place = row_parts[-1].strip()
+        lob_part, work_place = _get_lobbyists_mentions(work_place)
+        job_title = " ".join((job_title, lob_part))
+        cwp = _clean_work_place(work_place).strip()
+        cleaned_work_place_list = cwp.split()
+        cleaned_work_place = " ".join([word.strip("\"") for word in cleaned_work_place_list])
+        if not cleaned_work_place.strip():
+            continue
+
         yield full_name, job_title, cleaned_work_place, work_place
 
 
@@ -258,18 +293,39 @@ def _parse_full_name(full_name_raw, original_row="", parts=[]):
     return full_name, valid, full_job_title
 
 
+def __condition_1(candidates_scores):
+    return candidates_scores.fratio >= 89
+
+
+def __condition_2(candidates_scores):
+    cond1 = (candidates_scores.iou >= 0.1) & (candidates_scores.intersection >= 2)
+    cond2 = (candidates_scores.iou >= 0.05) & (candidates_scores.intersection >= 3)
+    return cond1 | cond2
+
+
+def __condition_3(candidates_scores):
+    return (candidates_scores.iou >= 0.01) & (candidates_scores.fratio >= 70)
+
+
 if __name__ == '__main__':
     path2meetings_info = LOCAL_PATH_TO_DATA + "committee-meetings.csv"
     path2firstnames = LOCAL_PATH_TO_DATA + "\\lexicons\\first_names.txt"  # with _ it's the newer version
     path2lastnames = LOCAL_PATH_TO_DATA + "\\lexicons\\last_names.txt"
-    path2titles = LOCAL_PATH_TO_DATA + "\\lexicons\\titles.txt"
-    path2companies_oracle = LOCAL_PATH_TO_DATA + "\\lexicons\\companies_oracle.csv"
     path2companies = LOCAL_PATH_TO_DATA + "companies.csv"
     path2cleaning_list = LOCAL_PATH_TO_DATA + "WORDS_TO_CLEAN.txt"
-    _load_globals(path2meetings_info, path2firstnames, path2lastnames, path2companies, path2titles,
-                  path2companies_oracle, path2cleaning_list)
-
+    path2lobbyists_mentions = LOCAL_PATH_TO_DATA + "lobbyists_mentions.txt"
+    path2titles = LOCAL_PATH_TO_DATA + "\\lexicons\\titles.txt"
     path2protocols = LOCAL_PATH_TO_DATA + "committees_csvs"
+
+    _load_globals(path2meetings_info, path2firstnames, path2lastnames, path2cleaning_list, path2lobbyists_mentions,
+                  path2titles)
     # extract_guests_from_meetings(path2protocols, path2meetings_info)
-    _collect_companies_pairs_and_scores(iteration_number=)
-    _merge_companies_names(iteration_number=1, condition=)
+    # _collect_companies_pairs_and_scores(iteration_number=0)
+    # _merge_companies_names(iteration_number=1, condition=__condition_1, condition_name="fratio_greater_than_89")
+    # _collect_companies_pairs_and_scores(iteration_number=1)
+    _merge_companies_names(iteration_number=2, condition=__condition_2, condition_name="iou_and_intersection")
+    _collect_companies_pairs_and_scores(iteration_number=2)
+    _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
+    _collect_companies_pairs_and_scores(iteration_number=3)
+    # guests_set2term_89 = load_pickle('guests_set2term_1_fratio_greater_than_89.pkl')
+    # print(len(guests_set2term_89))
