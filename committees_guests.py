@@ -129,9 +129,16 @@ def _concatenate_guests(all_dfs=[]):
 
 
 def _collect_companies_pairs_and_scores(iteration_number=0):
+    """
+    Reads the guests dataframe and collects candidate pairs: company names that share at least one (indicative) person.
+    Calculates string similarity scores and groupby company scores(intersection, union and their ratio),
+    then saves the scores table to a csv file to review manually and suggest a new conditon for merging.
+    :param iteration_number: to follow after the data that has been collected and merged along the iterative process.
+    :return: returns and saves the dataframe with the candidates scores.
+    """
     df = pd.read_csv("guests_{}.csv".format(iteration_number))
-    d = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": [], "iou": [], "intersection": [],
-         "union": []}
+    candidate_scores = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": [], "iou": [],
+                        "intersection": [], "union": []}
 
     if iteration_number != 0:
         df = update_indicative_names(df)
@@ -141,37 +148,57 @@ def _collect_companies_pairs_and_scores(iteration_number=0):
         gb = df.groupby("company")
 
     for id, pair in tqdm(enumerate(_get_candidates_for_similarity(df))):
-        d["c1"].append(pair[0])
-        d["c2"].append(pair[1])
+        candidate_scores["c1"].append(pair[0])
+        candidate_scores["c2"].append(pair[1])
         ratio, fratio, pfratio, ptfratio = _get_similarity_score(pair)
-        d["ratio"].append(ratio)
-        d["fratio"].append(fratio)
-        d["pfratio"].append(pfratio)
-        d["ptfratio"].append(ptfratio)
+        candidate_scores["ratio"].append(ratio)
+        candidate_scores["fratio"].append(fratio)
+        candidate_scores["pfratio"].append(pfratio)
+        candidate_scores["ptfratio"].append(ptfratio)
         iou, intersection, union = _get_jaccard_score(gb, pair)
-        d["iou"].append(iou)
-        d["intersection"].append(intersection)
-        d["union"].append(union)
-    candidates_scores = pd.DataFrame(d)
+        candidate_scores["iou"].append(iou)
+        candidate_scores["intersection"].append(intersection)
+        candidate_scores["union"].append(union)
+    candidates_scores = pd.DataFrame(candidate_scores)
     candidates_scores.to_csv("candidates_scores_{}.csv".format(iteration_number), sep=",", line_terminator='\n',
                              encoding='utf-8')
+    return candidates_scores
 
 
-def _merge_companies_names(condition, condition_name, iteration_number=1):
-    candidates_scores = pd.read_csv("candidates_scores_{}.csv".format(iteration_number - 1))
-    all_guests = pd.read_csv("guests_{}.csv".format(iteration_number - 1))
-    c1 = candidates_scores[condition(candidates_scores)]["c1"].tolist()
-    c2 = candidates_scores[condition(candidates_scores)]["c2"].tolist()
-    pairs = list(zip(c1, c2))
-    save_pickle(pairs, "pairs_{}_{}.pkl".format(iteration_number, condition_name))
+def _merge_companies_names(condition, condition_name, iteration_number=1, final_iteration=False, pairs=[]):
+    """
+    Reads current's iteration candidates_scores and data of all guests and applies the boolean condition function
+    to collect new pairs to merge. Merges the pairs into an org2merge_set, which is a mapping between an organisation to
+    all of its synonyms. Then decides on a single term to represent each merge_set, and replaces the name of the
+    organisation by its representative name, and updates the data again.
+    :param condition: a boolean function to apply on the data according to the candidates scores exploration
+    :param condition_name: expressive name to save the pairs that came out of this condition
+    :param iteration_number: to follow after the data that has been collected and merged along the iterative process.
+    :param final_iteration: a flag to represent the last iteration after betweenness corrections,
+                            set by default to False
+    :param pairs: an empty list by default, and in the final iteration gets the corrected pairs after betweenness check.
+    :return: returns and saves the dataframe with replaced organization names
+    """
+    if final_iteration:
+        all_guests = pd.read_csv("guests_0.csv")
+    else:
+        all_guests = pd.read_csv("guests_{}.csv".format(iteration_number - 1))
+        candidates_scores = pd.read_csv("candidates_scores_{}.csv".format(iteration_number - 1))
+        c1 = candidates_scores[condition(candidates_scores)]["c1"].tolist()
+        c2 = candidates_scores[condition(candidates_scores)]["c2"].tolist()
+        pairs = list(zip(c1, c2))
+        save_pickle(pairs, "pairs_{}_{}.pkl".format(iteration_number, condition_name))
     orgs2merge_sets = merge_entities_sets(pairs)
     companies_count = all_guests.company.value_counts()
     set2term = map_set_to_term(orgs2merge_sets, companies_count)
-    save_pickle(orgs2merge_sets, "guests_orgs2merge_sets_{}_{}.pkl".format(iteration_number, condition_name))
-    save_pickle(set2term, "guests_set2term_{}_{}.pkl".format(iteration_number, condition_name))
     for org, merge_set in tqdm(orgs2merge_sets.items()):
         all_guests.loc[all_guests.company == org, "company"] = set2term[merge_set]
-    all_guests.to_csv("guests_{}.csv".format(iteration_number), sep=",", line_terminator='\n', encoding='utf-8')
+    if final_iteration:
+        all_guests.to_csv("guests_{}.csv".format("final"), sep=",", line_terminator='\n', encoding='utf-8')
+    else:
+        save_pickle(orgs2merge_sets, "guests_orgs2merge_sets_{}_{}.pkl".format(iteration_number, condition_name))
+        save_pickle(set2term, "guests_set2term_{}_{}.pkl".format(iteration_number, condition_name))
+        all_guests.to_csv("guests_{}.csv".format(iteration_number), sep=",", line_terminator='\n', encoding='utf-8')
     return all_guests
 
 
@@ -202,7 +229,9 @@ def update_indicative_names(df: pd.DataFrame, threshold=5):
     return joined_df
 
 
-def _get_similarity_score(pair):
+def _get_similarity_score(pair, fratio=False):
+    if fratio:
+        return fuzz.ratio(pair[0], pair[1])
     s = SequenceMatcher(lambda x: x == " ", pair[0], pair[1])
     return s.ratio(), fuzz.ratio(pair[0], pair[1]), fuzz.partial_ratio(pair[0], pair[1]), fuzz.partial_token_sort_ratio(
         pair[0], pair[1])
@@ -293,6 +322,36 @@ def _parse_full_name(full_name_raw, original_row="", parts=[]):
     return full_name, valid, full_job_title
 
 
+def _filter_rare_companies(rare_threshold=3):
+    """
+    Reads the final_data (corrected data after betweennes check) and filteres rare companies,
+    companies that appeared in less than rare_threshold committee meetings. Finally, calculates similarity
+    scores for all of the filtered comanies combinations, and merges them.
+    :param rare_threshold: number of committee meetings to cut for a rare company
+    :return: filtered data frame to be merged ultimately
+    """
+    # data = pd.read_csv("guests_final.csv")  # TODO change to final guests
+    data = pd.read_csv("guests_3.csv")  # TODO change to final guests
+    data["count_unique_meeting_ids"] = data.groupby("company").meeting_id.transform("nunique")
+    filtered = data[data.count_unique_meeting_ids >= rare_threshold]
+
+    filtered.to_csv("filtered_guests.csv")
+    print(data.company.nunique())
+    print("\n".join(filtered.company.unique().tolist()))
+
+    candidate_scores = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": []}
+
+    for id, pair in tqdm(enumerate(combinations(filtered.company.unique().tolist(), 2))):
+        candidate_scores["c1"].append(pair[0])
+        candidate_scores["c2"].append(pair[1])
+        candidate_scores["fratio"].append(_get_similarity_score(pair, fratio=True))
+
+    candidates_scores = pd.DataFrame(candidate_scores)
+    candidates_scores.to_csv("candidates_scores_filtered.csv", sep=",", line_terminator='\n',
+                             encoding='utf-8')
+    return filtered
+
+
 def __condition_1(candidates_scores):
     return candidates_scores.fratio >= 89
 
@@ -307,13 +366,17 @@ def __condition_3(candidates_scores):
     return (candidates_scores.iou >= 0.01) & (candidates_scores.fratio >= 70)
 
 
+def __condition_4_filtered(candidates_scores):
+    return candidates_scores.fratio >= 90
+
+
 if __name__ == '__main__':
     path2meetings_info = LOCAL_PATH_TO_DATA + "committee-meetings.csv"
     path2firstnames = LOCAL_PATH_TO_DATA + "\\lexicons\\first_names.txt"  # with _ it's the newer version
     path2lastnames = LOCAL_PATH_TO_DATA + "\\lexicons\\last_names.txt"
     path2companies = LOCAL_PATH_TO_DATA + "companies.csv"
     path2cleaning_list = LOCAL_PATH_TO_DATA + "WORDS_TO_CLEAN.txt"
-    path2lobbyists_mentions = LOCAL_PATH_TO_DATA + "lobbyists_mentions.txt"
+    path2lobbyists_mentions = LOCAL_PATH_TO_DATA + "\\lexicons\\lobbyists_mentions.txt"
     path2titles = LOCAL_PATH_TO_DATA + "\\lexicons\\titles.txt"
     path2protocols = LOCAL_PATH_TO_DATA + "committees_csvs"
 
@@ -323,9 +386,10 @@ if __name__ == '__main__':
     # _collect_companies_pairs_and_scores(iteration_number=0)
     # _merge_companies_names(iteration_number=1, condition=__condition_1, condition_name="fratio_greater_than_89")
     # _collect_companies_pairs_and_scores(iteration_number=1)
-    _merge_companies_names(iteration_number=2, condition=__condition_2, condition_name="iou_and_intersection")
-    _collect_companies_pairs_and_scores(iteration_number=2)
-    _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
-    _collect_companies_pairs_and_scores(iteration_number=3)
+    # _merge_companies_names(iteration_number=2, condition=__condition_2, condition_name="iou_and_intersection")
+    # _collect_companies_pairs_and_scores(iteration_number=2)
+    # _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
+    # _collect_companies_pairs_and_scores(iteration_number=3)
     # guests_set2term_89 = load_pickle('guests_set2term_1_fratio_greater_than_89.pkl')
     # print(len(guests_set2term_89))
+    _filter_rare_companies()
