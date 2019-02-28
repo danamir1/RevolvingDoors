@@ -23,6 +23,7 @@ def recognize(old_job, data, set2term, sim_threshold=85):
         for synonym in merge_set:
             if fw.ratio(old_job, synonym) > sim_threshold:
                 return data[data.org_name == term]
+    # TODO add entities with no set2term
 
 
 def find_potential_revolving_doors(path2mayas_data, path2matches, path2set2term):
@@ -64,6 +65,22 @@ def lateral_explode(dataframe, fieldname):
     return dataframe
 
 
+def edit_plot_height_and_width(html_file, height, width):
+    import bs4
+    import re
+    with open(html_file) as inf:
+        txt = inf.read()
+        soup = bs4.BeautifulSoup(txt)
+        js =  soup.find_all(attrs={"type": "text/javascript"})[-1]
+        # js = soup.find_all(text = re.compile("plot_height"))
+        fixed_text = js.text.replace('\"plot_height\":300', '\"plot_height\":'+str(height))
+        js.replace_with(fixed_text)
+        # new_tag = soup.new_tag(name=js.name, attrs={"type": "text/javascript"})
+        # new_tag.string = "example.net"
+        # a_tag.i.replace_with(new_tag)
+
+
 if __name__ == "__main__":
-    path2mayas_data = LOCAL_PATH_TO_DATA + "maya\\full\\2018.csv"
-    pairs = find_potential_revolving_doors(path2mayas_data)
+    # path2mayas_data = LOCAL_PATH_TO_DATA + "maya\\full\\2018.csv"
+    # pairs = find_potential_revolving_doors(path2mayas_data)
+    edit_plot_height_and_width("out.html", 500, 1000)
