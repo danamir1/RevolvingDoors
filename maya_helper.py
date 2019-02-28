@@ -22,7 +22,7 @@ def recognize(old_job, data, set2term, sim_threshold=85):
     for merge_set, term in set2term.items():
         for synonym in merge_set:
             if fw.ratio(old_job, synonym) > sim_threshold:
-                return data[data.name == term]
+                return data[data.org_name == term]
 
 
 def find_potential_revolving_doors(path2mayas_data, path2matches, path2set2term):
