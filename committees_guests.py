@@ -49,7 +49,6 @@ def extract_guests_from_meetings(protocols_path, meetings_info_file):
             continue
         meeting_title = meeting_title if type(meeting_title) is str else session_content
         guests = _get_meeting_guests(meeting_file_path)
-        # TODO extract knesset members in committee
 
         for full_name, job_title, cleaned_work_place, work_place in guests:
             guest_tuple = (
@@ -68,8 +67,11 @@ def extract_guests_from_meetings(protocols_path, meetings_info_file):
 
 
 # INNER TOOLZ
-
 def _get_files_path(path2parentfolder):
+    """
+    yields committee_id, and its path to csv protocol
+    :param path2parentfolder: path to protocol parent folder
+    """
     for folder in os.listdir(path2parentfolder):
         for protocol in os.listdir(os.path.join(path2parentfolder, folder)):
             if protocol.endswith('.csv'):
@@ -78,6 +80,12 @@ def _get_files_path(path2parentfolder):
 
 
 def _get_meeting_info(meetings_info, meeting_id):
+    """
+    Gets the meetings_info dataframe and a meeting_id and extracts the meeting info as a tuple
+    :param meetings_info: DataFrame object containing all the meetings informtion
+    :param meeting_id: unique number representing the meeting
+    :return: committee_id, meeting_date, meeting_title, session_content, reference
+    """
     meeting_info = meetings_info.loc[meetings_info['id'] == int(meeting_id)].values
     if meeting_info.shape[0] == 0:
         return None, None, None
@@ -91,12 +99,24 @@ def _get_meeting_info(meetings_info, meeting_id):
     return committee_id, meeting_date, meeting_title, session_content, reference, year
 
 
-def _is_guest_pattern(gr):
+def _is_guest_pattern(guest_row):
+    """
+    Boolean function to check if a guest_row has a guest_pattern.
+    :param guest_row: string to check if it contains a guest_pattern
+    :return: True iff guest_row has the wanted pattern
+    """
     # skip committee staff by ignoring rows with :
-    return (re.search('\s-\s|\s–\s', gr) or len(gr.split(",")) > 2) and len(gr) and ":" not in gr
+    return (re.search('\s-\s|\s–\s', guest_row) or len(guest_row.split(",")) > 2) and len(
+        guest_row) and ":" not in guest_row
 
 
 def _get_meeting_guests(meeting_file_path):
+    """
+    Gets a path to the meeting file and extracts from the meeting protocol the relevant
+    rows for guests to parse later.
+    :param meeting_file_path: path to a csv file with the meeting protocol
+    :return: list of raw guest rows to parse
+    """
     df = pd.read_csv(meeting_file_path)
     # print(df)
     if 'header' not in df.columns:
@@ -114,7 +134,13 @@ def _get_meeting_guests(meeting_file_path):
     return guests
 
 
-def _concatenate_guests(all_dfs=[]):
+def _concatenate_guests(all_dfs=[], file_name="guests_0.csv"):
+    """
+    gets a list of dataframes to concatenate and saves the concatenated dataframe to file,
+    filtered with full names with length greater than one word.
+    :param all_dfs: list of data frame to concatenate. if empty, reads geusts data and concatenates it.
+    :return: conctenated dataframe
+    """
     if not all_dfs:
         for year in range(2004, 2019):
             last_update = date.today().__str__()
@@ -124,7 +150,7 @@ def _concatenate_guests(all_dfs=[]):
             all_dfs.append(df)
     all_rows = pd.concat(all_dfs)
     df = all_rows[all_rows.full_name.str.contains("\w\s\w", regex=True)]
-    df.to_csv("guests_0.csv", sep=",", line_terminator='\n', encoding='utf-8')
+    df.to_csv(file_name, sep=",", line_terminator='\n', encoding='utf-8')
     return df
 
 
@@ -145,8 +171,10 @@ def _collect_companies_pairs_and_scores(iteration_number=0):
         df = df[df.is_indicative_name]
         gb = df.groupby("company")
     else:
+        # first iteration doesn't include indicative names check
         gb = df.groupby("company")
 
+    # calculate and update dictionary scores
     for id, pair in tqdm(enumerate(_get_candidates_for_similarity(df))):
         candidate_scores["c1"].append(pair[0])
         candidate_scores["c2"].append(pair[1])
@@ -159,6 +187,8 @@ def _collect_companies_pairs_and_scores(iteration_number=0):
         candidate_scores["iou"].append(iou)
         candidate_scores["intersection"].append(intersection)
         candidate_scores["union"].append(union)
+
+    # save as csv
     candidates_scores = pd.DataFrame(candidate_scores)
     candidates_scores.to_csv("candidates_scores_{}.csv".format(iteration_number), sep=",", line_terminator='\n',
                              encoding='utf-8')
@@ -202,27 +232,50 @@ def _merge_companies_names(condition, condition_name, iteration_number=1, final_
     return all_guests
 
 
-def _get_candidates_for_similarity(df):
+def _get_candidates_for_similarity(guests_df):
+    """
+    Generator yielding candidates for similarity checks. Gets the guests dataframe and finds companies that have
+    potentially the same meaning because they appeared together with the same fullname.
+    :param guests_df: DataFrame object that holds guests participation in committees data
+    :return: yields companies names pair candidate to check its similarity.
+    """
     seen = set()
-    gb = df.groupby("full_name")
-    names = df.full_name.unique().tolist()
+    gb = guests_df.groupby("full_name")
+    names = guests_df.full_name.unique().tolist()
     for name in names:
+        # collect companies that appear together with the current name
         name_companies = [c for c in gb.get_group(name).company.unique().tolist() if c is not np.nan]
+
         for comb in combinations(name_companies, 2):
             frozen_comb = frozenset(comb)
             if frozen_comb in seen:
                 continue
             else:
                 seen.add(frozen_comb)
+                # yield pairs of companies that have potentially the same meaning
+                # because they appeared together with the same name
                 yield comb
 
 
-def update_indicative_names(df: pd.DataFrame, threshold=5):
-    filtered_keys = [k for k in df.keys() if k not in ['count_companies_per_name', 'is_indicative_name']]
-    df = df[filtered_keys]
-    count_companies_per_name = df.groupby("full_name", as_index=False).company.nunique().reset_index(
+def update_indicative_names(guests_df: pd.DataFrame, threshold=5):
+    """
+    Gets the guests dataframe and counts for each full_name the number of distinct companies it appeared with.
+    Then, adds an indicator column that is turned on iff the number of companies is lower than the given threshold
+    and also, the job_title field doesn't mention a lobbyist occupation -  our definition for indicative names to
+    rely on.
+    :param guests_df: DataFrame object that holds guests participation in committees data
+    :param threshold: upper bound for number of distinct companies that are still likely to appear with one person.
+                      greater number probably indicates same name for different people and could confuse the checks.
+                      unindictive name for example: "Moshe Cohen"
+    :return: new dataframe containing extra two columns: "count_companies_per_name" and "is_indicative_name"
+    """
+    # return the dataframe to its original form
+    filtered_keys = [k for k in guests_df.keys() if k not in ['count_companies_per_name', 'is_indicative_name']]
+    guests_df = guests_df[filtered_keys]
+
+    count_companies_per_name = guests_df.groupby("full_name", as_index=False).company.nunique().reset_index(
         name='count_companies_per_name')
-    joined_df = df.join(count_companies_per_name)
+    joined_df = guests_df.join(count_companies_per_name)
 
     joined_df.loc[:, "is_indicative_name"] = (joined_df.count_companies_per_name <= threshold) & \
                                              (joined_df.job_title.str.contains("|".join(lobbyists_mentions)))
@@ -230,6 +283,12 @@ def update_indicative_names(df: pd.DataFrame, threshold=5):
 
 
 def _get_similarity_score(pair, fratio=False):
+    """
+    Calculates different similarity scores for pair of candidates strings.
+    :param pair: two strings to check their similarity
+    :param fratio: flag var, if True calculates only fuzz.ratio
+    :return: a tuple of 4 similarity score calculated for the pair
+    """
     if fratio:
         return fuzz.ratio(pair[0], pair[1])
     s = SequenceMatcher(lambda x: x == " ", pair[0], pair[1])
@@ -238,15 +297,29 @@ def _get_similarity_score(pair, fratio=False):
 
 
 def _get_jaccard_score(gb, pair):
+    """
+    Get a groupby "full_name" object and a pair to check its jaccard similarity. Counts the number of companies that
+    appear in both groups (interscetion) and the total number of distinct companies in both groups (union), and finally
+    calculates their ratio.
+    :param gb: a groupby object for the guests dataframe groued by "full_name"
+    :param pair: two companies names to check their similarity
+    :return: tuple for ratio, intersection_size, union_size
+    """
     company_fullnames = set(gb.get_group(pair[0]).full_name.unique().tolist())
     subcompany_fullnames = set(gb.get_group(pair[1]).full_name.unique().tolist())
     intersection_size = len(company_fullnames.intersection(subcompany_fullnames))
     union_size = len(company_fullnames.union(subcompany_fullnames))
-    score = intersection_size / union_size
-    return score, intersection_size, union_size
+    ratio = intersection_size / union_size
+    return ratio, intersection_size, union_size
 
 
 def _clean_work_place(raw_work_place):
+    """
+    Gets a raw work_place name and cleans it from words that doesn't belong to work_place but tend to appear in the
+    protocols with it (like "CEO" and others). We prepared this list by looking at a sample of the parsed records.
+    :param raw_work_place: raw work_place name to truncate from noisy prefixes.
+    :return: cleaned work_place name
+    """
     for word in WORDS_TO_CLEAN:
         if raw_work_place.startswith(word):
             first_space = re.search("\\s", raw_work_place[len(word):])
@@ -258,6 +331,12 @@ def _clean_work_place(raw_work_place):
 
 
 def _get_lobbyists_mentions(work_place):
+    """
+    Gets a work_place name and checks if it needs to be splitted into lobbyist part (to be added to job_title)
+    and work_place part.
+    :param work_place: work_place name to check if it starts with a mention of libbyists.
+    :return: lobbyist part, work_place part
+    """
     for exp in lobbyists_mentions:
         if work_place.startswith(exp):
             first_space = re.search("\\s", work_place[len(exp):])
@@ -269,10 +348,16 @@ def _get_lobbyists_mentions(work_place):
 
 
 def _parse_rows(guests_rows):
+    """
+    Gets raw data by rows and parses it into the fields: full_name, job_title, cleaned_work_place, work_place
+    :param guests_rows: raw data by rows
+    :return: full_name, job_title, cleaned_work_place, work_place
+    """
     for row in guests_rows:
         row_parts = re.split(r',|\s-\s|\s–\s', row)
         hyphen_loc = row.find("-")
         comma_loc = row.find(",")
+        # for rows in which the full name appears after the degree
         if comma_loc > -1 and hyphen_loc > -1 and comma_loc < hyphen_loc:
             raw_full_name = row_parts.pop(-1)
             row_parts.insert(0, raw_full_name)
@@ -281,11 +366,14 @@ def _parse_rows(guests_rows):
         full_name, valid, job_title = _parse_full_name(row_parts[0], original_row=row, parts=row_parts)
         if not valid or len(row_parts) == 1:
             continue
-        # TODO verify if workplace in companies file
+
+        # the row contains job_title part, add it to the parsed out of parse_full_name job_title string
         if len(row_parts) > 2:
             job_title = " ".join((job_title, row_parts[1].strip().strip("–").strip()))
 
         work_place = row_parts[-1].strip()
+
+        # separate lobbyist mentions in work_place and clean other noisy expressions
         lob_part, work_place = _get_lobbyists_mentions(work_place)
         job_title = " ".join((job_title, lob_part))
         cwp = _clean_work_place(work_place).strip()
@@ -298,6 +386,14 @@ def _parse_rows(guests_rows):
 
 
 def _parse_full_name(full_name_raw, original_row="", parts=[]):
+    """
+    Gets a raw full_name part from raw guests rows and finds and collects from it first name, last name and job_title
+    is it contains them.
+    :param full_name_raw: full_name part from raw guests rows to parse
+    :param original_row: original_row string for debugging purposes
+    :param parts: original_row parts (list) for debugging purposes
+    :return: full_name, valid, full_job_title
+    """
     parts = re.split(r'\s+', full_name_raw)
     valid = False
     full_name = None
@@ -322,23 +418,19 @@ def _parse_full_name(full_name_raw, original_row="", parts=[]):
     return full_name, valid, full_job_title
 
 
-def _filter_rare_companies(rare_threshold=3):
+def _filter_rare_companies(rare_threshold=5):
     """
-    Reads the final_data (corrected data after betweennes check) and filteres rare companies,
+    Reads the final_data (corrected data after betweennes check) and filters rare companies,
     companies that appeared in less than rare_threshold committee meetings. Finally, calculates similarity
-    scores for all of the filtered comanies combinations, and merges them.
+    scores for all of the filtered companies combinations, and merges them.
     :param rare_threshold: number of committee meetings to cut for a rare company
     :return: filtered data frame to be merged ultimately
     """
-    # data = pd.read_csv("guests_final.csv")  # TODO change to final guests
-    data = pd.read_csv("guests_3.csv")  # TODO change to final guests
+    data = pd.read_csv("guests_final.csv")
     data["count_unique_meeting_ids"] = data.groupby("company").meeting_id.transform("nunique")
     filtered = data[data.count_unique_meeting_ids >= rare_threshold]
 
     filtered.to_csv("filtered_guests.csv")
-    print(data.company.nunique())
-    print("\n".join(filtered.company.unique().tolist()))
-
     candidate_scores = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": []}
 
     for id, pair in tqdm(enumerate(combinations(filtered.company.unique().tolist(), 2))):
@@ -353,20 +445,41 @@ def _filter_rare_companies(rare_threshold=3):
 
 
 def __condition_1(candidates_scores):
+    """
+    Keeps only candidates with fratio greater than 88, applied on companies that share at least one person.
+    :param candidates_scores: DataFrame to filter
+    :return: a boolean function to pass to a dataframe and filter by.
+    """
     return candidates_scores.fratio >= 89
 
 
 def __condition_2(candidates_scores):
+    """
+    Keeps only candidates with wanted jaccard score, applied on companies that share at least one person.
+    :param candidates_scores: DataFrame to filter
+    :return: a boolean function to pass to a dataframe and filter by.
+    """
     cond1 = (candidates_scores.iou >= 0.1) & (candidates_scores.intersection >= 2)
     cond2 = (candidates_scores.iou >= 0.05) & (candidates_scores.intersection >= 3)
     return cond1 | cond2
 
 
 def __condition_3(candidates_scores):
+    """
+    Keeps only candidates with wanted jaccard score, applied on companies that share at least one person.
+    :param candidates_scores: DataFrame to filter
+    :return: a boolean function to pass to a dataframe and filter by.
+    """
     return (candidates_scores.iou >= 0.01) & (candidates_scores.fratio >= 70)
 
 
 def __condition_4_filtered(candidates_scores):
+    """
+    Keeps only candidates with fratio greater than 89, applied on all of the companies combinations and not only on
+    companies that share al least one person.
+    :param candidates_scores: DataFrame to filter
+    :return: a boolean function to pass to a dataframe and filter by.
+    """
     return candidates_scores.fratio >= 90
 
 
@@ -382,14 +495,14 @@ if __name__ == '__main__':
 
     _load_globals(path2meetings_info, path2firstnames, path2lastnames, path2cleaning_list, path2lobbyists_mentions,
                   path2titles)
-    # extract_guests_from_meetings(path2protocols, path2meetings_info)
-    # _collect_companies_pairs_and_scores(iteration_number=0)
-    # _merge_companies_names(iteration_number=1, condition=__condition_1, condition_name="fratio_greater_than_89")
-    # _collect_companies_pairs_and_scores(iteration_number=1)
-    # _merge_companies_names(iteration_number=2, condition=__condition_2, condition_name="iou_and_intersection")
-    # _collect_companies_pairs_and_scores(iteration_number=2)
-    # _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
-    # _collect_companies_pairs_and_scores(iteration_number=3)
-    # guests_set2term_89 = load_pickle('guests_set2term_1_fratio_greater_than_89.pkl')
-    # print(len(guests_set2term_89))
+    extract_guests_from_meetings(path2protocols, path2meetings_info)
+
+    # start iterative process
+    _collect_companies_pairs_and_scores(iteration_number=0)
+    _merge_companies_names(iteration_number=1, condition=__condition_1, condition_name="fratio_greater_than_89")
+    _collect_companies_pairs_and_scores(iteration_number=1)
+    _merge_companies_names(iteration_number=2, condition=__condition_2, condition_name="iou_and_intersection")
+    _collect_companies_pairs_and_scores(iteration_number=2)
+    _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
+    _collect_companies_pairs_and_scores(iteration_number=3)
     _filter_rare_companies()
