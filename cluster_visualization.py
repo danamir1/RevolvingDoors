@@ -81,7 +81,7 @@ def apriori_cluster(baskets_file='data/ynet/articles_orgs_baskets_190222.pkl'):
                   reverse=True)
     for i, r in enumerate(sort):
         # print(r)
-        print(i, r.items, r.ordered_statistics)#.lift)  # , r.support)
+        print(i, r)#.items, r.ordered_statistics)#.lift)  # , r.support)
 
 
 def edit_distance(s1, s2):
