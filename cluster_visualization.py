@@ -81,7 +81,7 @@ def apriori_cluster(baskets_file='data/ynet/articles_orgs_baskets_190222.pkl'):
                   reverse=True)
     for i, r in enumerate(sort):
         # print(r)
-        print(i, r.items, r.ordered_statistics[0].lift)  # , r.support)
+        print(i, r.items, r.ordered_statistics)#.lift)  # , r.support)
 
 
 def edit_distance(s1, s2):
@@ -101,11 +101,6 @@ def edit_distance(s1, s2):
 
 
 def match_entities(orgs):
-    # todo maya matched orig name
-    # todo entities main office
-    # todo sum num candidates by set size of mergesets
-    # todo choose candidate by smallest candidate group
-    # todo load newest data
     # interactive matching of entities to the entities dataset. TODO: use merge sets and maya for better matching
     new_orgs = {'org_name': [], 'entity_name': [], 'id': [], 'type': [], 'sub_type': [],
                 'candidates': []}
@@ -114,10 +109,14 @@ def match_entities(orgs):
     entities_dataset = pd.read_csv(ENTITIES_DATABASE)
     # print(entities_dataset.columns.values)
     type_map = get_type_mapping()
+    org_done = set()
     for i, org_name in enumerate(orgs):
         # print('-->', org)
+        # if 'משרד' in org_name:
+        #     print(org_name)
         org_set = merge[org_name] if org_name in merge else set([org_name])
         candidates_set = []
+        total_num_candidates = 0
         for org in org_set:
             matched_maya = False
             # first use maya's matches
@@ -129,64 +128,85 @@ def match_entities(orgs):
                 matched_maya = True
 
             # candidates = entities_dataset[entities_dataset['name'].str.contains(org, regex=False)]
-            candidates = entities_dataset[entities_dataset['name'].str.contains('\\b' + org + '\\b',
-                                                                                regex=True) == True]
-            if ldetect(org) != 'he':
-                candidates = entities_dataset[entities_dataset['name_eng'].str.contains(
+            try:
+                candidates = entities_dataset[entities_dataset['name'].str.contains('\\b' + org + '\\b',regex=True) == True]
+                if ldetect(org) != 'he':
+                    candidates = entities_dataset[entities_dataset['name_eng'].str.contains(
                     '\\b({}|{}|{})\\b'.format(org.upper(), org, org.lower()), regex=True) == True]
-                # candidates = pd.concat([candidates, en_candidates]).drop_duplicates().reset_index(
-                #     drop=True)
-                print('EN----------', org)
-                print(candidates)
+                    # candidates = pd.concat([candidates, en_candidates]).drop_duplicates().reset_index(
+                    #     drop=True)
+                    # print('EN----------', org)
+                    # print(candidates)
+            except:
+                print('except', org)
+                candidates = pd.DataFrame(columns=list(entities_dataset.columns.values))
             if candidates.size == 0:
                 # no candidate
-                candidates_set.append((None, 0))
+                # candidates_set.append((None, 0))
 
-                candidate = {'org_name':org_name, 'entity_name':org_name,'id':-1}
+                candidate = {'org_name': org_name, 'entity_name': org_name, 'id': -1}
                 if matched_maya:
                     candidate['sub_type'] = 'company'
                     candidate['type'] = 'company'
+                    candidate['score'] = 1
                 else:
                     candidate['sub_type'] = 'other'
                     candidate['type'] = 'other'
+                    candidate['score'] = float('inf')
+
             else:
                 # look for the one with the smallest edit distance
                 cell_name = 'name' if ldetect(org) == 'he' else 'name_eng'
                 rows = map(lambda r: r[1], candidates.iterrows())
-                best_candidate = min(rows, key=lambda row: fuzz.token_sort_ratio(
+                best_candidate = max(rows, key=lambda row: fuzz.token_sort_ratio(
                     org, str(row[cell_name])))
                 # print('chosen:', row['name'])
                 candidate = {'org_name': org_name, 'entity_name': best_candidate['name'],
-                             'id':best_candidate['id'],'sub_type':best_candidate['type'],
-                             'type':type_map[best_candidate['type']]}
-            candidates_set.append((candidate, candidates.size))
-        total_num_candidates = sum([c[1] for c in candidates_set])
-        candidate_match = max(candidates_set, key=lambda c:c[1] if c[1]>0 else float('inf'))[0]
+                             'id': best_candidate['id'], 'sub_type': best_candidate['type'],
+                             'type': type_map[best_candidate['type']],
+                             'score': candidates.shape[0]}
+                total_num_candidates += candidates.shape[0]
+            candidates_set.append(candidate)
+        # total_num_candidates = sum([c['score'] for c in candidates_set])
+        # candidate_match = min(candidates_set, key=lambda c: c['score'])
+        candidate_match = max(candidates_set, key=lambda x: fuzz.token_sort_ratio(
+                    org_name, x['entity_name'])-x['score'])
+        # if 'משרד' in org_name:
+        #     print(org_name)
+        #     for c in candidates_set:
+        #         print(c['entity_name'], c['score'])
+        #     print('WON -->', candidate_match['entity_name'], candidate_match['score'],
+        #           candidate_match)
         # new_orgs = {'org_name': [], 'entity_name': [], 'id': [], 'type': [], 'sub_type': [],
         #         'candidates': []}
         for k in new_orgs:
             if k != 'candidates':
                 new_orgs[k].append(candidate_match[k])
         new_orgs['candidates'].append(total_num_candidates)
-        if (i + 1) % 50 == 0:
-
-            print('done', i)
-            break
+        if (i + 1) % 100 == 0:
+            print('done', i + 1)
+            # break
 
     # pd.DataFrame(new_orgs).to_csv('data/ynet/filtered_by_entity_db.csv', encoding='utf8')
     # pd.DataFrame({'org_name': unmatched_orgs}).to_csv("data/ynet/unmatched_orgs.csv",encoding='utf8')
-    pd.DataFrame(new_orgs).to_csv('data/ynet/ynet_matched.csv', encoding='utf8')
-    pd.DataFrame(new_orgs).to_excel('data/ynet/ynet_matched.xlsx', encoding='utf8')
+    pd.DataFrame(new_orgs).to_csv('data/ynet/ynet_matched2.csv', encoding='utf8')
+    pd.DataFrame(new_orgs).to_excel('data/ynet/ynet_matched2.xlsx', encoding='utf8')
     # pd.DataFrame({'org_name': unmatched_orgs}).to_csv("data/ynet/unmatched_orgs.csv", encoding='utf8')
     return new_orgs
+
 
 def clean_main_office():
     # data['result'] = data['result'].map(lambda x: x.lstrip('+-').rstrip('aAbBcC'))
     entities_dataset = pd.read_csv(ENTITIES_DATABASE_ORIG)
-    entities_dataset['name'] = entities_dataset['name'].map(lambda x: str(x).replace('/המשרד הראשי',
-                                                                                  ''))
+    entities_dataset['name'] = entities_dataset['name'].map(
+        lambda x: str(x).replace('/המשרד הראשי', ''))
+    entities_dataset['name'] = entities_dataset['name'].map(lambda x: str(x).replace(
+        '/ המשרד הראשי', ''))
+    entities_dataset['name'] = entities_dataset['name'].map(lambda x: str(x).replace(
+        '/\tהמשרד הראשי', ''))
     entities_dataset.to_csv(ENTITIES_DATABASE)
-    entities_dataset.to_excel(ENTITIES_DATABASE.split('.')[0]+'.xlsx')
+    entities_dataset.to_excel(ENTITIES_DATABASE.split('.')[0] + '.xlsx')
+
 
 def visualize(idx2org, org2idx, org2pairs, distance, affinity, distance_threshold):
     graph_nodes = []
@@ -206,9 +226,15 @@ def visualize(idx2org, org2idx, org2pairs, distance, affinity, distance_threshol
 
 
 if __name__ == '__main__':
-    # apriori_cluster()
+    apriori_cluster()
     # todo try: http://holoviews.org/gallery/demos/bokeh/lesmis_example.html
     # todo search: https://bokeh.pydata.org/en/latest/docs/user_guide/interaction/widgets.html
-    orgs = list(load_pickle('data/ynet/orgs_to_articles_190222.pkl').keys())
-    match_entities(orgs)
-    # clean_main_office()
+    # pairs = load_pickle('data/ynet/all_pairs_with_fixes.pkl')
+    # orgs = set()
+    # for x, y in pairs:
+    #     orgs.add(x)
+    #     orgs.add(y)
+    # print(len(orgs), orgs)
+    # # orgs = list(load_pickle('data/ynet/all_pairs_with_fixes.pkl').keys())
+    # match_entities(orgs)
+    # # clean_main_office()
