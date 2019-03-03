@@ -10,7 +10,7 @@ from collections import defaultdict
 import numpy as np
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
-from RevolvingDoors.ExtractEntities import map_set_to_term, merge_entities_sets, save_pickle, load_pickle
+from ExtractEntities import map_set_to_term, merge_entities_sets, save_pickle, load_pickle
 
 # GLOBALS
 meetings_info = pd.DataFrame()
@@ -193,6 +193,14 @@ def _collect_companies_pairs_and_scores(iteration_number=0):
     candidates_scores.to_csv("candidates_scores_{}.csv".format(iteration_number), sep=",", line_terminator='\n',
                              encoding='utf-8')
     return candidates_scores
+
+def _merge_companies_names_by_merge_sets():
+    org2merge_sets = load_pickle('all_data_org2mergeset_final.pkl')
+    set2term = load_pickle('all_data_set2term_final.pkl')
+    all_guests = pd.read_csv('guests_0.csv', encoding='utf8')
+    for org, merge_set in tqdm(org2merge_sets.items()):
+        all_guests.loc[all_guests.company == org, "company"] = set2term[frozenset(merge_set)]
+    all_guests.to_csv('guests_final_no_intersection_merges.csv', encoding='utf8')
 
 
 def _merge_companies_names(condition, condition_name, iteration_number=1, final_iteration=False, pairs=[]):
@@ -433,10 +441,13 @@ def _filter_rare_companies(rare_threshold=5):
     filtered.to_csv("filtered_guests.csv")
     candidate_scores = {"c1": [], "c2": [], "ratio": [], "fratio": [], "pfratio": [], "ptfratio": []}
 
+
     for id, pair in tqdm(enumerate(combinations(filtered.company.unique().tolist(), 2))):
-        candidate_scores["c1"].append(pair[0])
-        candidate_scores["c2"].append(pair[1])
-        candidate_scores["fratio"].append(_get_similarity_score(pair, fratio=True))
+        score = _get_similarity_score(pair, fratio=True)
+        if score > 60:
+            candidate_scores["c1"].append(pair[0])
+            candidate_scores["c2"].append(pair[1])
+            candidate_scores["fratio"].append(score)
 
     candidates_scores = pd.DataFrame(candidate_scores)
     candidates_scores.to_csv("candidates_scores_filtered.csv", sep=",", line_terminator='\n',
@@ -493,6 +504,7 @@ if __name__ == '__main__':
     path2titles = LOCAL_PATH_TO_DATA + "\\lexicons\\titles.txt"
     path2protocols = LOCAL_PATH_TO_DATA + "committees_csvs"
 
+
     _load_globals(path2meetings_info, path2firstnames, path2lastnames, path2cleaning_list, path2lobbyists_mentions,
                   path2titles)
     extract_guests_from_meetings(path2protocols, path2meetings_info)
@@ -505,4 +517,5 @@ if __name__ == '__main__':
     _collect_companies_pairs_and_scores(iteration_number=2)
     _merge_companies_names(iteration_number=3, condition=__condition_3, condition_name="iou_and_fration_70")
     _collect_companies_pairs_and_scores(iteration_number=3)
+
     _filter_rare_companies()
