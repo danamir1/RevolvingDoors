@@ -2,3 +2,8 @@
 *.pkl
 *.csv
 .idea*
+*.html
+*.png
+*.xlsx
+*.xls
+
