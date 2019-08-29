@@ -15,6 +15,8 @@ from langdetect import detect as ldetect
 from bokeh.models import GraphRenderer
 from bokeh.models.graphs import NodesAndLinkedEdges
 import seaborn as sns
+from scipy.linalg import eigh
+from scipy.spatial.distance import cdist
 MATCHES_PATH = 'all_org_to_entity_matches.csv'
 ENTITY = 'entity'
 BASKET = 'basket'
@@ -31,6 +33,119 @@ KEYS_DICT = {
     'ynet': YNET_KEYS,
     'committees': COMMITTEES_KEYS
 }
+paths = {
+        'committees': 'filtered_guests_final.csv',
+        'ynet': 'articles_orgs_baskets_190225.csv'
+    }
+
+# -------- APML clustering code ----------------
+
+def kmeans_pp_init(X, k, metric):
+    """
+    The initialization function of kmeans++, returning k centroids.
+    :param X: The data matrix.
+    :param k: The number of clusters.
+    :param metric: a metric function like specified in the kmeans documentation.
+    :return: kxD matrix with rows containing the centroids.
+    """
+    N = X.shape[0]
+    current_centroids = X[[np.random.choice(np.arange(0,N))],:]
+    while current_centroids.shape[0] < k:
+        current_distances = metric(X,current_centroids)
+        current_minimal_distance = np.min(current_distances, axis=1)
+        sampling_prob = np.power(current_minimal_distance, 2)
+        sampling_prob = sampling_prob / np.sum(sampling_prob)
+        new_centroid = X[[np.random.choice(np.arange(0,N),p=sampling_prob)], :]
+        current_centroids = np.concatenate((current_centroids, new_centroid))
+    return current_centroids
+
+def euclid(X, Y):
+    """
+    return the pair-wise euclidean distance between two data matrices.
+    :param X: NxD matrix.
+    :param Y: MxD matrix.
+    :return: NxM euclidean distance matrix.
+    """
+    N, d = X.shape
+    M, d2 = Y.shape
+    assert d2 == d
+    distances = cdist(X,Y, metric='euclidean')
+    return distances
+
+
+def euclidean_centroid(X):
+    """
+    return the center of mass of data points of X.
+    :param X: a sub-matrix of the NxD data matrix that defines a cluster.
+    :return: the centroid of the cluster.
+    """
+
+    return np.mean(X, axis=0)
+
+def kmeans(X, k, iterations=10, metric=euclid, center=euclidean_centroid, init=kmeans_pp_init):
+    """
+    The K-Means function, clustering the data X into k clusters.
+    :param X: A NxD data matrix.
+    :param k: The number of desired clusters.
+    :param iterations: The number of iterations.
+    :param metric: A function that accepts two data matrices and returns their
+            pair-wise distance. For a NxD and KxD matrices for instance, return
+            a NxK distance matrix.
+    :param center: A function that accepts a sub-matrix of X where the rows are
+            points in a cluster, and returns the cluster centroid.
+    :param init: A function that accepts a data matrix and k, and returns k initial centroids.
+    :param stat: A function for calculating the statistics we want to extract about
+                the result (for K selection, for example).
+    :return: a tuple of (clustering, centroids, statistics)
+    clustering - A N-dimensional vector with indices from 0 to k-1, defining the clusters.
+    centroids - The kxD centroid matrix.
+    """
+
+    current_centroids = init(X=X,k=k, metric=metric)
+    best_centroid_per_point = None
+    for i in range(iterations):
+        # find best cluster for each point
+        distances_to_centroids = metric(X, current_centroids)
+        best_centroid_per_point = np.argmin(distances_to_centroids, axis=1)
+        new_centroids = []
+        for j in range(k):
+            new_j_centroid = center(X[best_centroid_per_point == j,:])
+            new_centroids.append(new_j_centroid)
+        current_centroids = np.array(new_centroids)
+
+    stats = {}
+    stats["final_distances"] = np.min(metric(X, current_centroids), axis=1)
+    stats["total_cost"] = np.sum(stats["final_distances"])
+    return best_centroid_per_point, current_centroids, stats
+
+def spectral(Adj, k):
+    """
+    Cluster the data into k clusters using the spectral clustering algorithm.
+    :param X: A NxD data matrix.
+    :param k: The number of desired clusters.
+    :param similarity_param: m for mnn, sigma for the Gaussian kernel.
+    :param similarity: The similarity transformation of the data.
+    :return: clustering, as in the kmeans implementation.
+    """
+    N = Adj.shape[0]
+    adj_sum = np.sum(Adj, axis=0)
+    # avoid division by zero
+    adj_sum_nz = adj_sum.copy()
+    adj_sum_nz[adj_sum == 0] = 1
+    inv_sqrt_D = 1 / (adj_sum_nz ** 0.5)
+    inv_sqrt_D[adj_sum == 0] = 1
+    laplacian = np.eye(N) - (Adj * inv_sqrt_D.reshape((1,N)) * inv_sqrt_D.reshape((N,1))) # replace matrix
+    # multiplication by diagonal matrix with multiplication with vector with brodacasting.
+    laplacian = (0.5 * laplacian) + (0.5 * laplacian.T)
+    w,v = eigh(laplacian)
+    spectral_signature = v[:,:k]
+    spect_norms = np.linalg.norm(spectral_signature, axis=1, keepdims=True)
+    spect_norms[spect_norms == 0] = 1 # avoid zero division
+    spectral_signature = spectral_signature / spect_norms
+    clusters, centers, stats =  kmeans(spectral_signature,k)
+    return clusters
+
+# -------- APML clustering code ----------------
 
 def edit_plot_height_and_width(html_file, height, width):
     import bs4
@@ -61,22 +176,69 @@ def normalize_scores(pairs, apply_root=False):
         return s
     return [pair(p.items, norm(p.score)) for p in pairs]
 
-
-def analyze_graph(df, data_kind='ynet', similarity='pmi', min_support=0.0002, save_to='out.html'):
+def get_pairs(df, data_kind, min_support=0.0002, similarity='jaccard'):
     keys = KEYS_DICT[data_kind]
     orgs2baskets = datarows_to_sets(df, key_column=keys[ENTITY], value_column=keys[BASKET])
     baskets2orgs = datarows_to_sets(df, key_column=keys[BASKET], value_column=keys[ENTITY])
     pairs = extract_pair_by_min_support(baskets2orgs, min_support=min_support, similarity=similarity,
                                         to_print=True, org2basket=orgs2baskets)
-    pairs = normalize_scores(pairs, apply_root=similarity=='jaccard')
-    pairs = [p for p in pairs if p.score > 0]
+    pairs = normalize_scores(pairs, apply_root='root' in similarity)
+    return pairs
+
+def analyze_graph(df, data_kind='ynet', similarity='pmi', min_support=0.0002,
+                  save_to='out.html', **clustering_kwargs):
+    """
+    construction and analysis of interests graph
+    :param df: either single dataframe of item, set pairs from ynet or committees or list of them
+    :param data_kind: 'ynet' , 'committees' or list of both
+    :param similarity: name of similarity metric
+    :param min_support: minimal count ratio of item appearances in sets
+    :param save_to: html path to save interactive graphs to
+    :param clustering_kwargs: arguments for the clustering method
+    """
+    if type(data_kind) in [list, tuple]: # handle edges from multiple data sources
+        orgs2baskets = {}
+        items2pairs = {}
+        pairs_2maxscores = {}
+        for kind, d, supp in zip(data_kind, df, min_support):
+            keys = KEYS_DICT[kind]
+            _orgs2baskets = datarows_to_sets(d, key_column=keys[ENTITY], value_column=keys[BASKET])
+            _baskets2orgs = datarows_to_sets(d, key_column=keys[BASKET], value_column=keys[ENTITY])
+            _pairs = extract_pair_by_min_support(_baskets2orgs, min_support=supp,
+                                                 similarity=similarity,
+                                                to_print=True, org2basket=_orgs2baskets)
+            _pairs = normalize_scores(_pairs, apply_root='root' in similarity)
+            _pairs = [p for p in _pairs if p.score > 0]
+            for p in _pairs:
+                if p.items in pairs_2maxscores and p.score < pairs_2maxscores[p.items]:
+                    continue
+                else:
+                    pairs_2maxscores[p.items] = p.score
+                    items2pairs[p.items] = p
+            for org, basket in _orgs2baskets.items():
+                if org in orgs2baskets:
+                    orgs2baskets[org].update(basket)
+                else:
+                    orgs2baskets[org] = _orgs2baskets[org]
+
+        pairs = list(items2pairs.values())
+    else: # standard version
+        keys = KEYS_DICT[data_kind]
+        orgs2baskets = datarows_to_sets(df, key_column=keys[ENTITY], value_column=keys[BASKET])
+        baskets2orgs = datarows_to_sets(df, key_column=keys[BASKET], value_column=keys[ENTITY])
+        pairs = extract_pair_by_min_support(baskets2orgs, min_support=min_support, similarity=similarity,
+                                            to_print=True, org2basket=orgs2baskets)
+        pairs = normalize_scores(pairs, apply_root='root' in similarity)
+        pairs = [p for p in pairs if p.score > 0]
+
     matches = pd.read_csv(MATCHES_PATH, encoding='utf8', index_col='org_name').to_dict(orient='index')
     def create_desc_dict(org):
         keys = ['type','entity_name']
         return {k: matches[org][k] for k in keys}
     org2desc = {org: create_desc_dict(org) for org in orgs2baskets.keys()}
     idx2org, org2idx = build_index_dictionary(orgs2baskets.keys())
-    create_network_graph(org2idx, orgs2baskets, org2desc, pairs, save_to=save_to, color_by='cluster')
+    create_network_graph(org2idx, orgs2baskets, org2desc, pairs, save_to=save_to, color_by='cluster',
+                         **clustering_kwargs)
     return pairs
 
 def get_pmi(result):
@@ -105,7 +267,8 @@ def extract_pair_by_min_support(baskets_dict, min_support=0.0002, filter_set=Non
     score_to_func = {
         'pmi': get_pmi,
         'weighted_pmi': partial(get_weighted_pmi, total_count=len(baskets_dict), subtract=min_count // 2),
-        'jaccard': partial(calculate_jaccard, org2basket=kwargs['org2basket'])
+        'jaccard': partial(calculate_jaccard, org2basket=kwargs['org2basket']),
+        'root_jaccard': partial(calculate_jaccard, org2basket=kwargs['org2basket'])
     }
     baskets_list = [list(baskets_dict[b].difference(filter_set)) for b in baskets_dict]
     result = apriori(baskets_list, min_support=min_support, min_confidence=0.0, max_length=2)
@@ -151,7 +314,7 @@ def spectral_bi_cluster(org2idx: dict, org2desc: dict, pairs, affinity_matrix):
 
 
 def create_network_graph(org2idx, org2baskets, org2desc ,pairs, save_to='out.html',
-                         color_by='cluster',size_by='log_count'):
+                         color_by='cluster',size_by='log_count', clustering_type='spectral', n_clusters=20):
 
 
     N = len(org2idx)
@@ -162,9 +325,19 @@ def create_network_graph(org2idx, org2baskets, org2desc ,pairs, save_to='out.htm
         affinity_matrix[org2idx[org2], org2idx[org1]] = affinity_matrix[org2idx[org1], org2idx[org2]]
 
     # spectral clustering
-    # clustering = SpectralClustering(affinity='precomputed', n_clusters=20)
-    # clusters = clustering.fit_predict(affinity_matrix.tocsc())
-    clusters = spectral_bi_cluster(org2idx, org2desc, pairs, affinity_matrix)
+    if clustering_type == 'spectral':
+        clustering = SpectralClustering(affinity='precomputed', n_clusters=n_clusters)
+        clusters = clustering.fit_predict(affinity_matrix.tocsc())
+    elif clustering_type == 'bi_spectral':
+        clusters = spectral_bi_cluster(org2idx, org2desc, pairs, affinity_matrix)
+    elif clustering_type == 'our_spectral':
+        affinity_matrix = affinity_matrix.toarray()
+        clusters = spectral(affinity_matrix, n_clusters) # using APML HW version which seem to be better
+        # than sklearn (maybe they don't normalize laplacian from both sides)
+    else:
+        raise ValueError('choose valid clustering type!')
+
+    # visualize
     graph = nx.Graph()
     nodes = reduce(lambda x, y: list(x) + list(y), [x.items for x in pairs])
     nodes = list(set(nodes))
@@ -180,7 +353,7 @@ def create_network_graph(org2idx, org2baskets, org2desc ,pairs, save_to='out.htm
         if 'government' in types and 'company' in types:
             types = 1
         else:
-            types=0.2
+            types=0.4 # hide intra-sector edges
         graph_edges.append((p1, p2, {'weight': val, 'types': types}))
     graph.add_edges_from(graph_edges)
 
@@ -189,8 +362,37 @@ def create_network_graph(org2idx, org2baskets, org2desc ,pairs, save_to='out.htm
 
     graph.opts(node_cmap='Category20', node_size=size_by, edge_line_width='weight',
                node_color=color_by, node_line_width=0, edge_color='types', edge_cmap='Greys')
-    hv.save(graph,save_to)
+
+
+    # plot each cluster separately
+    clusters_plots = []
+    for cluster_value in np.unique(clusters):
+        cluster_nodes = [n for n in nodes if n[1]['cluster'] == cluster_value]
+        cluster_edges = [e for e in graph_edges if (clusters[org2idx[e[0]]] == cluster_value) and (
+            clusters[org2idx[e[1]]] == cluster_value)]
+        if len(cluster_edges) == 0:
+            continue
+        cluster_graph = nx.Graph()
+        cluster_graph.add_nodes_from(cluster_nodes)
+        cluster_graph.add_edges_from(cluster_edges)
+        c_graph = hv.Graph.from_networkx(cluster_graph, nx.layout.fruchterman_reingold_layout, weight='weight')
+        c_labels = hv.Labels(c_graph.nodes, ['x', 'y'], 'index')
+        c_labels.opts(text_font_size='8pt')
+        c_graph.opts(node_cmap='Category20', node_size=size_by, edge_line_width='weight',
+               node_color='cluster', node_line_width=0, edge_cmap='Greys')
+        c_graph = c_graph * c_labels
+        clusters_plots.append(c_graph)
+    layout = hv.Layout(clusters_plots).cols(4)
+    layout = (graph + layout).cols(1)
+    hv.save(layout, save_to)
     edit_plot_height_and_width(save_to, 800, 1200)
+    result = {'entity': [], 'cluster': []}
+    for idx, c in enumerate(clusters):
+        result['entity'].append(org2idx[idx])
+        result['cluster'].append(int(c))
+    df = pd.DataFrame(result)
+    df.to_csv(save_to.replace('.html', '.csv'))
+
 
 def get_matches(df: pd.DataFrame, data_type):
     matches = pd.read_csv(MATCHES_PATH, encoding='utf8')
@@ -217,25 +419,64 @@ def types_histogram():
     plt.tight_layout()
     plt.savefig('sub_types_hist.pdf')
 
-if __name__ == '__main__':
-    data_type = 'committees'
-    paths = {
-        'committees': 'filtered_guests_final.csv',
-        'ynet': 'articles_orgs_baskets_190225.csv'
-    }
+
+def scores_histogram():
+    fig, axes = plt.subplots(1,3)
+    data_type = 'ynet'
+    similarities = ['jaccard', 'root_jaccard', 'pmi']
+    scores = [get_pairs(pd.read_csv(paths[data_type], encoding='utf8'), data_type, 0.0002, s) for s in \
+            similarities]
+    scores = [[p.score for p in pairs] for pairs in scores]
+    for sim, a, sco in zip(similarities, axes, scores):
+        a.set_title(sim)
+        sns.distplot(sco, ax=a)
+    plt.savefig('scores_hist.pdf')
+
+def compare_scores():
+    data_type = 'ynet'
     df = pd.read_csv(paths[data_type], encoding='utf8')
+    pairs_jaccard = get_pairs(df, data_type, 0.0002, 'root_jaccard')
+    pairs_jaccard = sorted(pairs_jaccard, key=lambda x: x.score, reverse=True)
+    pairs2jaccardrank ={p.items: i for i,p in enumerate(pairs_jaccard)}
+    pairs_pmi = get_pairs(df, data_type, 0.0002, 'pmi')
+    pairs_pmi = sorted(pairs_pmi, key=lambda x: x.score, reverse=True)
+    jaccard_set = set([p.items for p in pairs_jaccard[:50]])
+    pairs2pmirank = {p.items: i for i, p in enumerate(pairs_pmi)}
+    pmi_set = set([p.items for p in pairs_pmi[:50]])
+    diff_scores = []
+    for pair in pairs2pmirank:
+        diff_scores.append((pair, pairs2pmirank[pair] - pairs2jaccardrank[pair]))
+    diff_scores = sorted(diff_scores, key=lambda x: x[1], reverse=True)
+
+    print("\n\n\n ---------------- \n\n\n")
+
+    print("higher jaccard:  ")
+    print("\n".join([str(x) for x in diff_scores[:20]]))
+
+    print("higher pmi:  ")
+    print("\n".join([str(x) for x in diff_scores[-20:]]))
+    print('pmi but not jaccard')
+    print(pmi_set.difference(jaccard_set))
+    print('jaccard but not pmi')
+    print(jaccard_set.difference(pmi_set))
+
+
+def main():
+    data_types = ['ynet', 'committees']
+    dfs = [pd.read_csv(paths[dtype]) for dtype in data_types]
+
+    clustering_type = 'our_spectral'
+    n_clusters = 20
     similarity = 'pmi'
-    pairs = analyze_graph(df, data_type, similarity, 0.0002, '{}_{}_bi_spectral.html'.format(data_type, similarity))
-    # scores = [p.score for p in pairs]
-    # scores = np.array(scores)
-    # scores /= scores.max()
-    # scores = scores ** 0.5
-    # plt.hist(scores, bins=50)
-    # plt.figure()
-    # pairs = analyze_graph(df, 'ynet', 'pmi', 0.0002)
-    # scores = [p.score for p in pairs]
-    # scores = np.array(scores)
-    # scores /= scores.max()
-    # scores = scores[scores >= 0]
-    # plt.hist(scores, bins=50)
-    # plt.show()
+    analyze_graph(dfs,
+                  data_types,
+                  similarity,
+                  [0.0002, 0.0008],
+                  '{}_{}_{}.html'.format("-".join(data_types), similarity, clustering_type),
+                  clustering_type=clustering_type,
+                  num_clusters=n_clusters)
+
+
+
+if __name__ == '__main__':
+    main()

@@ -10,7 +10,9 @@ from collections import defaultdict
 import numpy as np
 from fuzzywuzzy import fuzz
 from fuzzywuzzy import process
-from ExtractEntities import map_set_to_term, merge_entities_sets, save_pickle, load_pickle
+from utils import save_pickle, load_pickle
+from name_merging_tools import merge_entities_sets
+from extract_ynet_data import map_set_to_term
 
 # GLOBALS
 meetings_info = pd.DataFrame()

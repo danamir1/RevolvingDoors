@@ -17,17 +17,18 @@ DEFAULT_SINCE = time.strptime('2000','%Y')
 ARCHIVED_SNAPSHOT_KEY = "archived_snapshots"
 WAY_BACK_CDX_QUERY = "http://web.archive.org/cdx/search/cdx?url={}&output=json&collapse=timestamp:8&from={" \
                  "}&to={}"
-WAY_NACK_URL_FORMAT = "http://web.archive.org/web/{}/{}"
+WAY_BACK_URL_FORMAT = "http://web.archive.org/web/{}/{}"
 
 
 def get_url_from_wb_cdx_response(response):
     timestamp = response[1]
     original = response[2]
-    url = WAY_NACK_URL_FORMAT.format(timestamp, original)
+    url = WAY_BACK_URL_FORMAT.format(timestamp, original)
     return url
 
 
 def add_delay(delay_secs):
+    # decorator to allow scraping without IP blocking
     def add_delay_fixed_time(func):
         @wraps(func)
         def func_with_delay(*args, **kwargs):
@@ -134,23 +135,11 @@ class YnetScraper(object):
 
             yield url, text
 
-@add_delay(10)
-def test_delay():
-    for i in range(10):
-        yield("test")
-
-
 if __name__ == "__main__":
     RUN_NAME = "heb_20162019"
     snapshots = retrieve_daily_snapshots(YNET_HEB_ROOT, since="20160101")
     with open("snapshots_{}.txt".format(RUN_NAME), "w") as f:
         f.write("\n".join(snapshots))
-    # with open("articles.txt", "r") as f:
-    #     articles = f.readlines()
-    #     articles = [s.strip() for s in articles if s != ""]
-    # with open("snapshots_heb_20162019.txt", "r") as f:
-    #     snapshots = f.readlines()
-    #     snapshots = [s.strip() for s in snapshots if s != ""]
     scraper = YnetScraper(snapshots)
     with open("articles_{}.txt".format(RUN_NAME), "w") as f:
         f.write("\n".join(scraper.get_urls()))
